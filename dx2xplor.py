@@ -1,6 +1,7 @@
 import os
 import argparse
 import gridData
+import numpy as np
 
 """
 Map header
@@ -52,57 +53,85 @@ ZYX
        0
 """
 
- def _export_xplor(grid, filename, type=None, typequote='"', **kwargs):
-        """Export the density grid to an XPLOR file.
+class XPLORGrid():
 
-        The file format is the simplest regular grid array and it is
-        also understood by VMD's and Chimera's DX reader; PyMOL
-        requires the dx `type` to be set to "double".
+    def __init__(self):
+        
+        self.array = None
+        self.offset = None
+        self.spacing = None
+        self.shape = None
 
-        For the file format see
-        http://www.esi.umontreal.ca/accelrys/life/insight2000.1/xplor/formats.html
+        self.format = 'Xplor'
+        self._size = None
+        self._ignored_lines = None
+        self._first = None
+        self._last = None
+        self._angles = None
 
+    def fromDX(self, DX):
+
+        # self._ignored_lines = DX.metadata
+        self._ignored_lines = ['DX2XPLOR conversion']
+        self.array = DX.grid
+        
+        self.spacing = DX.delta
+        self.shape = DX.grid.shape
+
+        self._size = np.array([edge[-1] - edge[0] for edge in DX.edges])
+
+        min_corner = np.array([edge[0] for edge in DX.edges])
+        
+        self._first = np.array([int(si / sh * co) for si, sh, co in zip(
+                            self._size, self.shape, min_corner)])
+        self._last = np.array([int(si + fi) for si, fi in zip(
+                            self._size, self._first)])
+        self._angles = np.array([90, 90, 90])
+
+        self.offset = (self._first - 0.5) * self.spacing
+
+    def write(self, filename):
+        """Write grid data into a file.
+        If a filename is not provided, gridname_state.xplor will be used.
         """
-        root, ext = os.path.splitext(filename)
-        filename = root + '.xplor'
 
-        NA, NB, NC = grid.grid.shape
-        AMIN, AMAX = grid.
+        xplor_file = open(filename, 'w')
 
-        a, b, c = [edge[-1] - edge[0] for edge in grid.edges]
-        alpha, beta, gamma =  [90.0, 90.0, 90.0]
+        for line in self._ignored_lines:
+            xplor_file.write(line+'\n')
+        
+        xplor_file.write(('{0[0]:8d}{1[0]:8d}{2[0]:8d}'
+                            '{0[1]:8d}{1[1]:8d}{2[1]:8d}'
+                            '{0[2]:8d}{1[2]:8d}{2[2]:8d}\n').format(
+                                            self.shape,
+                                            self._first,
+                                            self._last))
 
-        header = [
-            '',
-            '       1',
-            'DX2XPLOR',
-            f'{NA:>8g}{AMIN:>8g}{AMAX:>8g}' + \
-            f'{NB:>8g}{BMIN:>8g}{BMAX:>8g}' + \
-            f'{NC:>8g}{CMIN:>8g}{CMAX:>8g}',
-            f'{a:>12.5E}{b:>12.5E}{c:>12.5E}' + \
-            f'{alpha:>12.5E}{beta:>12.5E}{gamma:>12.5E}'
-            'ZXY',
-            '       0'
-        ] 
+        xplor_file.write(('{0[0]:12.3f}{0[1]:12.3f}{0[2]:12.3f}'
+                            '{1[0]:12.3f}{1[1]:12.3f}{1[2]:12.3f}\n').format(
+                                                        self._size,
+                                                        self._angles))
+        xplor_file.write('ZYX\n')
 
-        components = dict(
-            positions=OpenDX.gridpositions(1, self.grid.shape, self.origin,
-                                           self.delta),
-            connections=OpenDX.gridconnections(2, self.grid.shape),
-            data=OpenDX.array(3, self.grid, type=type, typequote=typequote),
-        )
-        dx = OpenDX.field('density', components=components, comments=comments)
+        format_ = ''
+        for i in range(self.shape[0]):
+            if i != 0 and i % 6 == 0:
+                format_ += '\n'
+            format_ += '{0['+str(i)+']:12.5f}'
+        else:
+            if i % 6 != 0:
+                format_ += '\n'
 
-        dx.write(filename)
-
-def export2XPLOR(grid, filename):
-
-    outmap = open(filename, 'w')
-
+        for k in range(self.shape[2]):
+            xplor_file.write('{0:8d}\n'.format(k + self._first[2]))
+            for j in range(self.shape[1]):
+                xplor_file.write(format_.format(self.array[:, j, k]))
+        xplor_file.close()
+        return filename
 
 
 
-def _main_(inputfile, outputfile):
+def main(infilename, outfilename):
     """[summary]
 
     Parameters
@@ -112,11 +141,34 @@ def _main_(inputfile, outputfile):
     outputfile : [type]
         [description]
     """
-    grid = gridData.Grid()
-    grid.load(inputfile)
 
-    export2XPLOR(grid, outputfile)
+    # Load grid
+    dx_grid = gridData.Grid()
+    dx_grid.load(infilename)
 
-    
+    # Create XPLOR grid
+    xplor_grid = XPLORGrid()
+    xplor_grid.fromDX(dx_grid)
+
+    # Write XPLOR file
+    xplor_grid.write(outfilename)
+
+
+if __name__ == '__main__':
+    program_args = argparse.ArgumentParser(description='OpenDX to XPLOR Grid Converter')
+    program_args.add_argument('-i', '--inputfile' , required=True,  help="Input file path")
+    program_args.add_argument('-o', '--outputfile', required=False, help="Output file path")
+
+    args = program_args.parse_args()
+
+    if args.inputfile:
+        infilename = args.inputfile
+        assert ".dx" in infilename.lower(), 'unsupported file : "it supports only .DX File Format as input"'
+        
+    if args.outputfile:
+        outfilename = args.outputfile
+        assert ".xplor" in outfilename.lower(), 'unsupported file : "it supports only .XPLOR File Format as output"'
+
+    main(infilename, outfilename)
 
 
